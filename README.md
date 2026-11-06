@@ -4,7 +4,7 @@
 
 English | [中文](README.zh.md)
 
-A public [DS-Bot fork](https://github.com/robinliang0829-lgtm/ds-bot-turbo) that ports OpenMausBot capabilities onto the DSH Bot runtime. This development branch includes a real tool-selection port and Magpie support; it is not a finished port of the whole OpenMausBot application.
+A public [DS-Bot fork](https://github.com/robinliang0829-lgtm/ds-bot-turbo) that ports OpenMausBot capabilities onto the DS Bot runtime. This development branch includes a real tool-selection port and Magpie support; it is not a finished port of the whole OpenMausBot application.
 
 - **Connect Magpie** in Bot settings → Models. Use OpenAI Responses (default) or Chat Completions, discover models, or enter model IDs manually. Each connection receives its own route and credential reference; each Bot can select a different connection.
 - **Keep this model connection** prevents automatic fallback when a Bot's selected connection disappears, including group Sessions and copies. Explicit model changes remain possible.

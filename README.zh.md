@@ -4,7 +4,7 @@
 
 [English](README.md) | 中文
 
-这是基于 DS-Bot、将 OpenMausBot 能力移植到 DSH Bot 运行时的[公开项目](https://github.com/robinliang0829-lgtm/ds-bot-turbo)。当前开发分支包含实际的工具选择移植和 Magpie 支持，完整 OpenMausBot 应用仍在后续范围中。
+这是基于 DS-Bot、将 OpenMausBot 能力移植到 DS Bot 运行时的[公开项目](https://github.com/robinliang0829-lgtm/ds-bot-turbo)。当前开发分支包含实际的工具选择移植和 Magpie 支持，完整 OpenMausBot 应用仍在后续范围中。
 
 - **连接 Magpie**：Bot 设置 → 模型。默认 OpenAI Responses，也可选 Chat Completions；支持发现模型和手工输入模型 ID。每个连接拥有独立路由和凭据引用，各 Bot 可选择不同连接。
 - **固定此模型连接**：连接消失时不自动回退，覆盖群成员 Session 和复制 Bot；用户仍可主动改选模型。
