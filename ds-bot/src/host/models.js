@@ -165,6 +165,12 @@ export function install(rt) {
   async function desiredModel(bot) {
     if (!bot.model) return undefined
     const entries = await catalog()
+    if (bot.modelFallback === false) {
+      if (!usableOf(entries).some(entry => entry.ref === bot.model)) {
+        throw new Error(`The fixed model connection ${bot.model} is unavailable. Restore it or select another model in Bot settings.`)
+      }
+      return bot.model
+    }
     if (entries.some(entry => entry.ref === bot.model)) return bot.model
     return usableOf(entries).some(entry => entry.ref === bot.appliedModel) ? bot.appliedModel : pickDefault(entries)
   }
@@ -212,16 +218,20 @@ export function install(rt) {
     const run = selecting.then(async () => {
       const defaults = ctx.get?.('agentDefaultModel')
       const before = defaults?.currentSelection?.()
-      const result = await ctx.sessionController.selectModel({
-        sessionId, provider, model,
-        ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
-      })
-      const saved = result?.selected ?? { provider, model, ...(reasoningEffort === undefined ? {} : { reasoningEffort }) }
-      if (before?.provider && before?.model && !sameSelection(before, saved)) {
-        await defaults.saveSelection(before).catch(error => rt.warn('ds-bot: the default model was not restored: %s', error))
+      let result
+      try {
+        result = await ctx.sessionController.selectModel({
+          sessionId, provider, model,
+          ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+        })
+        sessionSelections.set(sessionId, { provider, model, reasoningEffort })
+        return result
+      } finally {
+        const saved = result?.selected ?? { provider, model, ...(reasoningEffort === undefined ? {} : { reasoningEffort }) }
+        if (before?.provider && before?.model && !sameSelection(before, saved)) {
+          await defaults.saveSelection(before).catch(error => rt.warn('ds-bot: the default model was not restored: %s', error))
+        }
       }
-      sessionSelections.set(sessionId, { provider, model, reasoningEffort })
-      return result
     })
     selecting = run.catch(() => {})
     return run
@@ -241,8 +251,10 @@ export function install(rt) {
     for (const sessionId of rt.groupSessionsOf(bot.id)) {
       const applied = sessionSelections.get(sessionId)
       if (!force && applied !== undefined && sameSelection(applied, route)) continue
-      await selectSessionModel(sessionId, route)
-        .catch(error => rt.warn('ds-bot: model for %s in a group not applied: %s', bot.name, error))
+      await selectSessionModel(sessionId, route).catch((error) => {
+        if (bot.modelFallback === false) throw error
+        rt.warn('ds-bot: model for %s in a group not applied: %s', bot.name, error)
+      })
     }
     if (!ownChanged) return ref
     bot.appliedModel = ref
@@ -293,7 +305,7 @@ export function install(rt) {
       refused.set(ref, served)
       rt.warn('ds-bot: %s is not a model endpoint, so it is not chosen again', ref)
       const entries = await catalog()
-      const pinned = Object.values(state.bots).filter(other => other.model === ref || other.appliedModel === ref)
+      const pinned = Object.values(state.bots).filter(other => other.modelFallback !== false && (other.model === ref || other.appliedModel === ref))
       for (const other of pinned) {
         if (other.model === ref) other.model = pickDefault(entries)
         if (other.appliedModel === ref) delete other.appliedModel

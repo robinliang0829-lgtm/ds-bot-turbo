@@ -4,6 +4,7 @@ import { mkdir } from 'node:fs/promises'
 import { MAX_AVATAR_IMAGE, ROOM_MAX_MEMBERS, ROOM_MODES, ROOM_NAME_MAX, ROOM_NOTICE_MAX } from './constants.js'
 import { currentColor, isColor, normalize, splitRef, unquote } from './text.js'
 import { nameProblem } from '../shared/mentions.js'
+import { parseToolScope } from '../shared/tool-scope.js'
 
 const BROWSER_GRANT_KINDS = new Set(['post', 'upload', 'download', 'delete', '*'])
 const HOSTNAME = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/
@@ -180,6 +181,8 @@ export function install(rt) {
       if (main) state.mainBotIds.push(id)
       const creator = rt.botOf(createdBy)
       const original = rt.botOf(copyOf)
+      if (original?.toolScope !== undefined) state.bots[id].toolScope = structuredClone(original.toolScope)
+      if (original?.modelFallback !== undefined) state.bots[id].modelFallback = original.modelFallback
       const language = rt.uiLanguage?.()
       // The kickoff arrives as a user message, so it outranks the Bot's instructions
       // unless it gives way to them, and it names no tool those instructions may rule out.
@@ -295,6 +298,9 @@ export function install(rt) {
     if (bot === undefined) throw new Error('Unknown Bot')
     if (bot.private === true) throw new Error(`${bot.name} is private, so it cannot be copied`)
     const served = (await rt.catalog()).some(entry => entry.ref === bot.model)
+    if (bot.modelFallback === false && !served) {
+      throw new Error(`The fixed model connection for ${bot.name} is unavailable. Restore it before copying this Bot.`)
+    }
     // A folder that went away since leaves the copy in the team workspace.
     const workDir = bot.workDir !== undefined && await rt.isFolder(bot.workDir) ? bot.workDir : undefined
     // No await from here to createBot's check, so two copies at once get different names.
@@ -322,6 +328,14 @@ export function install(rt) {
     if (patch.private !== undefined && actorId !== undefined) {
       throw new Error(`Only the user can make ${bot.name} private or open`)
     }
+    if ((patch.toolScope !== undefined || patch.modelFallback !== undefined) && actorId !== undefined) {
+      throw new Error(`Only the user can change tool access or model fallback for ${bot.name}`)
+    }
+    const toolScope = parseToolScope(patch.toolScope === null ? undefined : patch.toolScope)
+    if (!toolScope.ok) throw new Error(toolScope.error)
+    if (patch.modelFallback !== undefined && typeof patch.modelFallback !== 'boolean') {
+      throw new Error('Model fallback must be on or off')
+    }
     const browserGrants = patch.browserGrants === undefined ? undefined : cleanBrowserGrants(patch.browserGrants)
     // Checked first, so a folder, model or level that does not pass leaves the rest
     // unchanged too.
@@ -335,6 +349,16 @@ export function install(rt) {
     // A new level resolves against the model the Bot will run on: the new one, the
     // model it keeps, or — the model cleared — the one it last ran on.
     const effortRef = modelRef === undefined ? bot.model ?? bot.appliedModel : modelRef ?? bot.appliedModel
+    const nextScope = patch.toolScope === undefined ? bot.toolScope : toolScope.scope
+    const checkScopeRoute = () => {
+      if (nextScope === undefined) return
+      // A running CLI may still execute its own tools after a profile update.
+      const refs = [effortRef, bot.model, bot.appliedModel]
+      if (rt.hasActiveLocalAgentCalls?.(bot.id) === true || refs.some(ref => rt.isLocalAgentRoute?.(splitRef(ref)?.provider) === true)) {
+        throw new Error('Tool access requires an API model. Switch away from the local agent and stop its active turns before enabling Tool access.')
+      }
+    }
+    checkScopeRoute()
     let effortId
     if (patch.effort !== undefined) {
       if (patch.effort === null || patch.effort === '') effortId = null
@@ -388,6 +412,14 @@ export function install(rt) {
       if (browserGrants === null) delete bot.browserGrants
       else bot.browserGrants = browserGrants
     }
+    if (patch.toolScope !== undefined) {
+      // Other profile fields awaited above; a queued CLI request may have started.
+      // No await may separate this check from committing the tool policy.
+      checkScopeRoute()
+      if (toolScope.scope === undefined) delete bot.toolScope
+      else bot.toolScope = toolScope.scope
+    }
+    if (patch.modelFallback !== undefined) bot.modelFallback = patch.modelFallback
     if (flag === true) bot.private = true
     else if (flag === false) delete bot.private
     const moved = moving && workDir !== bot.workDir

@@ -14,6 +14,8 @@ node_modules/
 
 # Test bench, local DSH data and the screenshots of dev/check.sh.
 .dsh-test*/
+.dsh-test*.log
+/ds-bot/.turbo-test.log
 .dsh-home/
 /shots/
 .playwright-mcp/

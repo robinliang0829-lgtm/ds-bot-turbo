@@ -1,8 +1,22 @@
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/logo-dark.svg"><img src="docs/images/logo.svg" alt="DS Bot" width="260"></picture></p>
 
-# DS Bot
+# ds-bot-turbo
 
 English | [中文](README.zh.md)
+
+A public [DS-Bot fork](https://github.com/robinliang0829-lgtm/ds-bot-turbo) that ports OpenMausBot capabilities onto the DSH Bot runtime. This development branch includes a real tool-selection port and Magpie support; it is not a finished port of the whole OpenMausBot application.
+
+- **Connect Magpie** in Bot settings → Models. Use OpenAI Responses (default) or Chat Completions, discover models, or enter model IDs manually. Each connection receives its own route and credential reference; each Bot can select a different connection.
+- **Keep this model connection** prevents automatic fallback when a Bot's selected connection disappears, including group Sessions and copies. Explicit model changes remain possible.
+- **Tool access**, adapted from OpenMausBot, applies allow/deny selectors at DSH's execution guard for the Bot's own chat, groups and parts. Tool descriptions may remain visible. This is not a filesystem/network sandbox; CLI-native tools require the CLI's own controls.
+
+[Research](docs/turbo/RESEARCH.md) · [Design](docs/plans/2026-11-06-turbo-runtime-profiles.md) · [Roadmap](docs/turbo/ROADMAP.md) · [Isolated smoke verification](docs/turbo/SMOKE.md) · [Third-party notices](NOTICE)
+
+This is a source preview. The plugin package remains named `ds-bot` for DSH compatibility; no Turbo installer or npm release is published yet. Connection-private ACLs, private skill management and the full OpenMausBot workspace UI are subsequent milestones. The strict runtime-profile resolver is a tested foundation, not the production dispatch path. Existing user data is not migrated or modified by these changes.
+
+## Upstream DS Bot documentation
+
+The download links and screenshots below belong to upstream DS Bot and do **not** include the Turbo changes. DS-Bot attribution and documentation are retained below.
 
 ![version](https://img.shields.io/badge/version-v0.3_preview-blue) ![DSH](https://img.shields.io/badge/DSH-0.2.2--rc.1-4D6BFE) ![license](https://img.shields.io/badge/license-Apache_2.0-green)
 

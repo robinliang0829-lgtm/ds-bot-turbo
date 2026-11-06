@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { createServer } from 'node:http'
+import { once } from 'node:events'
 import { Config as PiAiConfig } from '@deepseek-ai/dsh-llm-pi-ai'
 import { install as installModels } from '../src/host/models.js'
 import { checkKey, install, keyRefFor } from '../src/host/providers.js'
+import { MAGPIE, MAGPIE_LOCAL_KEY, magpieModels } from '../src/shared/magpie.js'
 
 // A DSH with the official DeepSeek route, an account route, and the pi-ai adapter: its
 // directory offers catalog providers, and its settings take path writes the way DSH's
@@ -278,4 +281,135 @@ test('an API key is what an HTTP header carries, without a NAME= or quotes', () 
 test('a route\'s key reference follows DSH\'s own Models page', () => {
   assert.equal(keyRefFor('moonshotai'), 'MOONSHOTAI_API_KEY')
   assert.equal(keyRefFor('my-gateway2'), 'MY_GATEWAY2_API_KEY')
+})
+
+const magpieProfiles = writes => writes.filter(([ns]) => ns === 'llm-pi-ai').flatMap(([, ops]) => ops.filter(op => op.op === 'set' && op.path.length === 2).map(op => [op.path[1], op.value]))
+
+async function gateway(t, handler) {
+  const server = createServer(handler)
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve) }))
+  return `http://127.0.0.1:${server.address().port}/v1`
+}
+
+const magpieListing = { data: [{
+  id: 'codex/gpt-6-astra', display_name: 'GPT-6-Astra', context_window: 272000, max_output_tokens: 128000,
+  modalities: { input: ['text', 'image'] }, reasoning: true, reasoning_levels: ['low', 'high', 'xhigh', 'max', 'ultra'], native_endpoints: ['/v1/responses'],
+}] }
+
+test('each Magpie connection gets an independent route, model reference and credential', async () => {
+  const { rt, store, writes } = dsh({ keys: { OPENAI_API_KEY: 'unrelated-openai', MAGPIE_API_KEY: 'unrelated-magpie' } })
+  const models = magpieModels(magpieListing)
+  await rt.addProvider({ preset: 'magpie', provider: 'deepseek-official', models })
+  await rt.addProvider({ preset: 'magpie', name: 'Magpie work', api: 'openai-completions', key: 'test-work', models })
+  const [[first, a], [second, b]] = magpieProfiles(writes)
+  assert.match(first, /^magpie-[a-f0-9-]{36}$/)
+  assert.match(second, /^magpie-[a-f0-9-]{36}$/)
+  assert.notEqual(first, second)
+  assert.notEqual(a.apiKeyEnv, b.apiKeyEnv)
+  assert.equal(a.apiKeyEnv, keyRefFor(first))
+  assert.equal(store[a.apiKeyEnv], MAGPIE_LOCAL_KEY)
+  assert.equal(store[b.apiKeyEnv], 'test-work')
+  assert.equal(a.baseURL, MAGPIE.baseURL)
+  assert.equal(a.api, 'openai-responses')
+  assert.equal(b.api, 'openai-completions')
+  assert.equal(a.displayName, 'Magpie')
+  assert.equal(b.displayName, 'Magpie work')
+  for (const [id, profile] of [[first, a], [second, b]]) {
+    const parsed = PiAiConfig({ providers: { [id]: profile } }).providers.get()[id]
+    assert.deepEqual(parsed.models[0].input, ['text', 'image'])
+    assert.equal(parsed.models[0].contextWindow, 272000)
+    assert.equal(parsed.models[0].maxTokens, 128000)
+    assert.deepEqual(parsed.models[0].reasoningEfforts, { low: 'low', high: 'high', xhigh: 'xhigh', max: 'max' })
+    assert.equal(parsed.models[0].nativeApis, undefined)
+    assert.equal(parsed.compat.supportsDeveloperRole, false)
+  }
+  const view = await rt.providersView()
+  assert.deepEqual(row(view, first).models.map(model => model.ref), [`${first}/codex/gpt-6-astra`])
+  assert.deepEqual(row(view, second).models.map(model => model.ref), [`${second}/codex/gpt-6-astra`])
+  assert.equal((await needing(rt)).includes(first), false)
+  await rt.removeProvider(first)
+  assert.equal(store[a.apiKeyEnv], undefined)
+  assert.equal(store[b.apiKeyEnv], 'test-work')
+  assert.equal(store.OPENAI_API_KEY, 'unrelated-openai')
+  assert.equal(store.MAGPIE_API_KEY, 'unrelated-magpie')
+  assert.ok(row(await rt.providersView(), second))
+})
+
+test('Magpie rejects unusable drafts before writing a route or credential', async () => {
+  const { rt, writes } = dsh()
+  const body = { preset: 'magpie', models: ['m'] }
+  await assert.rejects(rt.addProvider({ ...body, baseURL: 'https://gateway.example/v1' }), /API key for a remote/)
+  await assert.rejects(rt.addProvider({ ...body, baseURL: 'http://u:pass@127.0.0.1:3425/v1' }), /without credentials/)
+  await assert.rejects(rt.addProvider({ ...body, baseURL: `${MAGPIE.baseURL}?key=test` }), /without credentials/)
+  await assert.rejects(rt.addProvider({ ...body, api: 'anthropic-messages' }), /Responses or Chat Completions/)
+  await assert.rejects(rt.addProvider({ ...body, models: [] }), /at least one model/)
+  await assert.rejects(rt.addProvider({ ...body, models: ['m', 'm'] }), /same id/)
+  await assert.rejects(rt.addProvider({ ...body, key: 'KEY=test' }), /NAME=value/)
+  assert.deepEqual(writes, [])
+})
+
+test('Magpie discovery reads only the local model listing and preserves its capabilities', async (t) => {
+  const requests = []
+  const baseURL = await gateway(t, (req, res) => {
+    requests.push({ method: req.method, path: req.url, authorization: req.headers.authorization })
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(magpieListing))
+  })
+  const { rt, store, writes, discovered } = dsh()
+  const models = await rt.discoverModels({ preset: 'magpie', baseURL: `${baseURL}/responses` })
+  assert.deepEqual(requests, [{ method: 'GET', path: '/v1/models', authorization: `Bearer ${MAGPIE_LOCAL_KEY}` }])
+  assert.deepEqual(models, magpieModels(magpieListing))
+  assert.deepEqual(discovered, [])
+  assert.deepEqual(store, {})
+  assert.deepEqual(writes, [])
+})
+
+test('Magpie remote discovery uses only the draft key and does not persist it', async (t) => {
+  const calls = []
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    calls.push({ url, ...init })
+    return new Response(JSON.stringify({ data: [{ id: 'cursor/auto', reasoning: false }] }))
+  })
+  const { rt, store, writes } = dsh({ keys: { OPENAI_API_KEY: 'unrelated', MAGPIE_API_KEY: 'unrelated' } })
+  const models = await rt.discoverModels({ preset: 'magpie', baseURL: 'https://gateway.example/v1', api: 'openai-completions', key: 'test-draft' })
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].url, 'https://gateway.example/v1/models')
+  assert.equal(calls[0].method, 'GET')
+  assert.equal(calls[0].headers.Authorization, 'Bearer test-draft')
+  assert.equal(calls[0].redirect, 'error')
+  assert.ok(calls[0].signal instanceof AbortSignal)
+  assert.deepEqual(models, [{ id: 'cursor/auto', reasoningEfforts: false }])
+  assert.deepEqual(store, { OPENAI_API_KEY: 'unrelated', MAGPIE_API_KEY: 'unrelated' })
+  assert.deepEqual(writes, [])
+})
+
+test('Magpie discovery refuses redirects instead of forwarding the draft key', async (t) => {
+  let redirected = false
+  const destination = await gateway(t, (_req, res) => { redirected = true; res.end('{"data":[]}') })
+  const baseURL = await gateway(t, (_req, res) => res.writeHead(302, { Location: `${destination}/models` }).end())
+  const { rt } = dsh()
+  await assert.rejects(rt.discoverModels({ preset: 'magpie', baseURL, key: 'test-draft' }), /Could not read Magpie models/)
+  assert.equal(redirected, false)
+})
+
+test('Magpie discovery failures are bounded and never echo keys or upstream bodies', async (t) => {
+  const { rt, writes } = dsh()
+  const responses = [
+    () => new Response('test-private-key', { status: 401 }),
+    () => new Response('not-json test-private-key'),
+    () => new Response('{"error":"test-private-key"}'),
+    () => new Response('[]', { headers: { 'content-length': String(3 * 1024 * 1024) } }),
+    () => new Response(' '.repeat(2 * 1024 * 1024 + 1)),
+    () => { throw new Error('network failed: test-private-key') },
+  ]
+  t.mock.method(globalThis, 'fetch', async () => responses.shift()())
+  for (let count = responses.length; count > 0; count -= 1) {
+    await assert.rejects(rt.discoverModels({ preset: 'magpie', key: 'test-private-key' }), (error) => {
+      assert.equal(error.code, 'bot/invalid')
+      assert.equal(error.message.includes('test-private-key'), false)
+      return true
+    })
+  }
+  assert.deepEqual(writes, [])
 })

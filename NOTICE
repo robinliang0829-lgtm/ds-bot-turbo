@@ -182,6 +182,24 @@ affiliates), and react-markdown and remark-gfm with the packages they use
 Copyright (c) Andrea Giammarchi). Vite is a build tool only.
 
 ==============================================================================
+OpenMausBot tool-scope port in ds-bot-turbo
+==============================================================================
+
+Source: https://github.com/milind-soni/OpenMausBot
+Revision: fb31cb7dc56a90a00a6f07001219335a1afdff08 (0.1.143)
+Source file: shared/tool-scope.ts
+Destination: ds-bot/src/shared/tool-scope.js
+License: Apache License, Version 2.0 (see LICENSE).
+
+The tool selection parser, allow/deny matching, MCP checks and widening checks
+are adapted from OpenMausBot. Changes: JavaScript ESM instead of TypeScript;
+remove OpenMausBot agent-tool aliases; reject sparse/accessor-backed malformed
+input; add conservative DSH public-tool identity mapping. DSH runtime guards,
+Bot settings and the Magpie connection integration are separate Turbo work.
+No enterprise code, desktop assets or OpenMausBot approval defaults are included.
+OpenMausBot also informed the stable connection identity and group relay design.
+
+==============================================================================
 Projects that gave us ideas (no code copied)
 ==============================================================================
 
@@ -194,8 +212,6 @@ their ideas; it does not contain their code.
   - OpenAI Codex (https://github.com/openai/codex), Apache-2.0:
     keeping the user's messages next to the summary in a checkpoint, and
     message anchors for searching earlier chat.
-  - OpenMausBot (https://github.com/milind-soni/OpenMausBot), Apache-2.0:
-    group chat rounds and @mention relays between Bots.
   - Hermes Agent (https://github.com/NousResearch/hermes-agent) and
     Hermes Bot Mode (https://github.com/NousResearch/Hermes-Bot-Mode), MIT:
     one Session per member per group chat, and the list of earlier user

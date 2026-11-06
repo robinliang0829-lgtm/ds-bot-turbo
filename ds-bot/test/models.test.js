@@ -20,6 +20,46 @@ function runtime(defaultSelection) {
   return rt
 }
 
+test('a fixed connection never falls back to a prior model or another provider', async () => {
+  const rt = runtime({ provider: 'ollama', model: 'kimi-k3' })
+  const bot = { model: 'removed/model', appliedModel: 'ollama/kimi-k3', modelFallback: false }
+  await assert.rejects(rt.desiredModel(bot), /fixed model connection.*unavailable/)
+  assert.equal(bot.model, 'removed/model')
+  const missing = withoutKeys(undefined, ['deepseek'])
+  await assert.rejects(missing.desiredModel({ model: 'deepseek/deepseek-v4-pro', modelFallback: false }), /unavailable/)
+})
+
+test('a rejected selection still restores the user default', async () => {
+  const { rt, current } = bench()
+  const original = rt.ctx.sessionController.selectModel
+  rt.ctx.sessionController.selectModel = async options => { await original(options); throw new Error('session write failed') }
+  await assert.rejects(rt.selectSessionModel('b1', { provider: 'deepseek', model: 'v4-flash' }), /session write failed/)
+  assert.deepEqual(current(), { provider: 'stepfun', model: 'step-5' })
+})
+
+test('a pinned Bot propagates group model selection failures instead of claiming success', async () => {
+  const { rt } = bench()
+  rt.groupSessionsOf = () => ['g1']
+  const original = rt.ctx.sessionController.selectModel
+  rt.ctx.sessionController.selectModel = async options => {
+    if (options.sessionId === 'g1') throw new Error('group selection failed')
+    return original(options)
+  }
+  const bot = { id: 'b1', model: 'deepseek/v4-flash', modelFallback: false }
+  await assert.rejects(rt.applyModel(bot), /group selection failed/)
+  assert.equal(bot.appliedModel, undefined)
+})
+
+test('a refused route preserves a fixed Bot connection while legacy Bots can fall back', async () => {
+  const { rt } = bench()
+  const fixed = { id: 'fixed', model: 'deepseek/v4-flash', modelFallback: false }
+  const legacy = { id: 'legacy', model: 'deepseek/v4-flash' }
+  rt.state.bots = { fixed, legacy }
+  await assert.rejects(rt.routeRefused('deepseek/v4-flash', fixed), /unavailable/)
+  assert.equal(fixed.model, 'deepseek/v4-flash')
+  assert.equal(legacy.model, 'stepfun/step-5')
+})
+
 test('the default model is the DSH default when served, else the first served model', async () => {
   assert.equal(await runtime({ provider: 'ollama', model: 'kimi-k3' }).defaultModel(), 'ollama/kimi-k3')
   assert.equal(await runtime({ provider: 'gone', model: 'x' }).defaultModel(), 'deepseek/deepseek-v4.1-flash')

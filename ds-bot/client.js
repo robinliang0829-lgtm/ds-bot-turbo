@@ -42,6 +42,33 @@ module.exports = __toCommonJS(index_exports);
 // src/client/i18n.js
 var NAMESPACE = "ds-bot";
 var ZH = {
+  "Connect Magpie": "连接 Magpie",
+  "Each Magpie connection has its own model route and API key.": "每个 Magpie 连接使用独立的模型路由与 API Key。",
+  "Connection name": "连接名称",
+  "Local Magpie may leave the key blank. Choose the protocol your model serves.": "本机 Magpie 可留空密钥，请选择模型支持的协议。",
+  "Adding…": "正在添加…",
+  "Use an endpoint without credentials, a query or a fragment": "端点地址不能包含用户名密码、查询参数或片段",
+  "Magpie uses OpenAI Responses or Chat Completions": "Magpie 支持 OpenAI Responses 或 Chat Completions 协议",
+  "Enter an API key for a remote Magpie endpoint": "远程 Magpie 端点需要填写 API Key",
+  "Magpie did not return a model list. Enter model ids manually.": "Magpie 未返回模型列表，请手动填写模型 ID。",
+  "The Magpie model list is too large. Enter model ids manually.": "Magpie 模型列表过大，请手动填写模型 ID。",
+  "Could not read Magpie models. Check the endpoint and API key, or enter model ids manually.": "无法读取 Magpie 模型，请检查端点和 API Key，或手动填写模型 ID。",
+  "Magpie model discovery failed (HTTP {status}). Check the endpoint and API key.": "Magpie 模型发现失败（HTTP {status}），请检查端点和 API Key。",
+  "Keep this model connection": "固定使用此模型连接",
+  "Stop if this connection is unavailable instead of switching to another provider.": "连接不可用时停止，不会自动切换到其他服务商。",
+  "Tool access": "工具使用范围",
+  "Limit tool access": "限制可用工具",
+  "Applies to this Bot in every chat. Tool descriptions may remain visible, but denied calls are blocked before execution.": "对这个 Bot 的所有聊天生效。工具描述可能仍可见，但禁止的调用会在执行前拦截。",
+  "Tool access requires an API model. Switch away from the local agent and stop its active turns before enabling Tool access.": "工具限制需要 API 模型。请切换离开本地 Agent，并停止其正在运行的回合，再启用工具限制。",
+  "Allowed tools": "允许的工具",
+  "Denied tools": "禁止的工具",
+  "One selector per line: native:read or mcp:github:*. Leave empty to allow no tools.": "每行一条，例如 native:read 或 mcp:github:*。留空表示不允许任何工具。",
+  "Only allow listed tools": "仅允许列出的工具",
+  "When off, all available tools are allowed except those denied below.": "关闭时继承全部可用工具，只排除下面禁止的工具。",
+  "Denied tools override the allowed list. Use native:* for all native tools or mcp:github:* for one MCP server.": "禁止优先于允许。native:* 表示全部原生工具，mcp:github:* 表示指定 MCP 服务的全部工具。",
+  "Available with API models, including Magpie. Local agents must use their own tool controls. This does not restrict file or network access inside an allowed tool.": "适用于 Magpie 等 API 模型。本地代理需使用自己的工具控制。此设置不限制已允许工具内部的文件或网络访问。",
+  "Enter valid tool selectors before saving.": "请先输入有效的工具选择规则。",
+  "Save tool access": "保存工具范围",
   // Shared
   "Main Bot": "主 Bot",
   Working: "进行中",
@@ -10978,6 +11005,156 @@ function MemoryDialog({ owner, actions, leaving = false }) {
   );
 }
 
+// src/shared/tool-scope.js
+var SERVER_NAME = /^[a-z][a-z0-9_-]{0,31}$/;
+var CONTROL_CHARACTER = /[\x00-\x1f\x7f]/;
+var MAX_SELECTORS = 256;
+var MAX_SELECTOR_LENGTH = 1024;
+var DSH_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+var DSH_HASH_SUFFIX = /_[a-f0-9]{12}$/;
+function validName(name) {
+  return typeof name === "string" && name.trim().length > 0 && name.length <= MAX_SELECTOR_LENGTH && !CONTROL_CHARACTER.test(name) && !name.includes("*");
+}
+function validServer(server) {
+  return typeof server === "string" && SERVER_NAME.test(server);
+}
+function selectorIdentity(selector) {
+  if (typeof selector !== "string" || selector.length > MAX_SELECTOR_LENGTH || CONTROL_CHARACTER.test(selector)) return;
+  if (selector.startsWith("native:")) {
+    const name = selector.slice(7);
+    if (name === "*" || validName(name)) return { kind: "native", name };
+  } else if (selector.startsWith("mcp:")) {
+    const separator = selector.indexOf(":", 4);
+    if (separator < 0) return;
+    const server = selector.slice(4, separator);
+    const name = selector.slice(separator + 1);
+    if (validServer(server) && (name === "*" || validName(name))) {
+      return { kind: "mcp", server, name };
+    }
+  }
+}
+function plainRecord(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+function readList(value, accepts, limit = MAX_SELECTORS) {
+  try {
+    if (!Array.isArray(value)) return;
+    const length = Object.getOwnPropertyDescriptor(value, "length")?.value;
+    if (!Number.isSafeInteger(length) || length < 0 || length > limit) return;
+    if (Reflect.ownKeys(value).length !== length + 1) return;
+    const result = [];
+    for (let index = 0; index < length; index++) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      if (!descriptor || !("value" in descriptor) || !accepts(descriptor.value)) return;
+      result.push(descriptor.value);
+    }
+    return result;
+  } catch {
+    return void 0;
+  }
+}
+function parseToolScope(value) {
+  if (value === void 0) return { ok: true, scope: void 0 };
+  const invalid2 = { ok: false, error: "Tool selection must contain only valid allow and deny lists." };
+  try {
+    if (!plainRecord(value)) return invalid2;
+    const scope = {};
+    for (const key of Reflect.ownKeys(value)) {
+      if (key !== "allow" && key !== "deny") return invalid2;
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !("value" in descriptor)) return invalid2;
+      const list = readList(descriptor.value, selectorIdentity);
+      if (list === void 0) return invalid2;
+      scope[key] = [...new Set(list)];
+    }
+    return { ok: true, scope };
+  } catch {
+    return invalid2;
+  }
+}
+function readToolIdentity(value) {
+  try {
+    if (!plainRecord(value)) return;
+    const kind = Object.getOwnPropertyDescriptor(value, "kind")?.value;
+    const name = Object.getOwnPropertyDescriptor(value, "name")?.value;
+    if (!validName(name)) return;
+    if (kind === "native") return { kind, name };
+    const server = Object.getOwnPropertyDescriptor(value, "server")?.value;
+    if (kind === "mcp" && validServer(server)) return { kind, server, name };
+  } catch {
+    return void 0;
+  }
+}
+function dshToolIdentity(name) {
+  if (typeof name !== "string" || !DSH_NAME.test(name)) return;
+  if (!name.startsWith("mcp__")) return { kind: "native", name };
+  const parts = name.split("__");
+  if (parts.length !== 3 || name.includes("___") || !validServer(parts[1]) || !validName(parts[2]) || DSH_HASH_SUFFIX.test(name)) return;
+  return { kind: "mcp", server: parts[1], name: parts[2] };
+}
+function matches(selector, tool) {
+  const selected = selectorIdentity(selector);
+  return selected?.kind === tool.kind && (selected.kind !== "mcp" || tool.kind === "mcp" && selected.server === tool.server) && (selected.name === "*" || selected.name === tool.name);
+}
+function permits(scope, tool) {
+  return (scope?.allow === void 0 || scope.allow.some((selector) => matches(selector, tool))) && !scope?.deny?.some((selector) => matches(selector, tool));
+}
+function allowsTool(scope, tool) {
+  const parsed = parseToolScope(scope);
+  const identity = readToolIdentity(tool);
+  return parsed.ok && identity !== void 0 && permits(parsed.scope, identity);
+}
+function narrowsNativeTools(value) {
+  const parsed = parseToolScope(value);
+  if (!parsed.ok) return true;
+  const scope = parsed.scope;
+  return scope !== void 0 && (scope.allow !== void 0 && !scope.allow.includes("native:*") || Boolean(scope.deny?.some((selector) => selector.startsWith("native:"))));
+}
+function canUseMcpServer(scope, server, names) {
+  const parsed = parseToolScope(scope);
+  if (!parsed.ok || !validServer(server)) return false;
+  if (names !== void 0) {
+    const catalog = readList(names, validName, Infinity);
+    return catalog !== void 0 && catalog.some((name) => permits(parsed.scope, { kind: "mcp", server, name }));
+  }
+  if (parsed.scope?.deny?.includes(`mcp:${server}:*`)) return false;
+  if (parsed.scope?.allow === void 0) return true;
+  return parsed.scope.allow.some((selector) => {
+    const selected = selectorIdentity(selector);
+    return selected?.kind === "mcp" && selected.server === server && (selected.name === "*" || permits(parsed.scope, selected));
+  });
+}
+function toolScopeWidens(previous, next) {
+  const before = parseToolScope(previous);
+  const after = parseToolScope(next);
+  if (!after.ok) return false;
+  const namespaces = /* @__PURE__ */ new Map([["native", /* @__PURE__ */ new Set()]]);
+  const scopes = [before.ok ? before.scope : void 0, after.scope];
+  for (const scope of scopes) {
+    for (const selector of [...scope?.allow ?? [], ...scope?.deny ?? []]) {
+      const tool = selectorIdentity(selector);
+      const namespace = tool.kind === "native" ? "native" : `mcp:${tool.server}`;
+      if (!namespaces.has(namespace)) namespaces.set(namespace, /* @__PURE__ */ new Set());
+      if (tool.name !== "*") namespaces.get(namespace).add(tool.name);
+    }
+  }
+  let server = "unlisted";
+  for (let index = 0; namespaces.has(`mcp:${server}`); index++) server = `unlisted${index}`;
+  namespaces.set(`mcp:${server}`, /* @__PURE__ */ new Set());
+  for (const [namespace, names] of namespaces) {
+    let other = "__unlisted_tool__";
+    for (let index = 0; names.has(other); index++) other = `__unlisted_tool_${index}__`;
+    names.add(other);
+    for (const name of names) {
+      const tool = namespace === "native" ? { kind: "native", name } : { kind: "mcp", server: namespace.slice(4), name };
+      if (permits(after.scope, tool) && (!before.ok || !permits(before.scope, tool))) return true;
+    }
+  }
+  return false;
+}
+
 // src/client/bot-settings.js
 var import_react25 = require("react");
 var capitalize = (word) => word[0].toUpperCase() + word.slice(1);
@@ -11038,6 +11215,48 @@ function SwitchRow({ label, hint, on, disabled, onChange }) {
     { className: "bt-set-row bt-bs-row" },
     (0, import_react25.createElement)("span", { className: "bt-set-copy" }, (0, import_react25.createElement)("span", { className: "bt-bs-label" }, label), hint ? (0, import_react25.createElement)("span", { className: "bt-set-hint" }, hint) : null),
     (0, import_react25.createElement)(Switch, { on, label, disabled, onChange })
+  );
+}
+function ToolAccessCard({ bot, save }) {
+  const [enabled, setEnabled] = (0, import_react25.useState)(bot.toolScope !== void 0);
+  const [selectedOnly, setSelectedOnly] = (0, import_react25.useState)(bot.toolScope?.allow !== void 0);
+  const [allow, setAllow] = (0, import_react25.useState)((bot.toolScope?.allow ?? []).join("\n"));
+  const [deny, setDeny] = (0, import_react25.useState)((bot.toolScope?.deny ?? []).join("\n"));
+  const revision = JSON.stringify(bot.toolScope);
+  (0, import_react25.useEffect)(() => {
+    setEnabled(bot.toolScope !== void 0);
+    setSelectedOnly(bot.toolScope?.allow !== void 0);
+    setAllow((bot.toolScope?.allow ?? []).join("\n"));
+    setDeny((bot.toolScope?.deny ?? []).join("\n"));
+  }, [bot.id, revision]);
+  const lines = (value) => value.split("\n").map((line) => line.trim()).filter(Boolean);
+  const parsed = parseToolScope(enabled ? { ...selectedOnly ? { allow: lines(allow) } : {}, deny: lines(deny) } : void 0);
+  return (0, import_react25.createElement)(
+    Card2,
+    { title: t("Tool access") },
+    (0, import_react25.createElement)(SwitchRow, { label: t("Limit tool access"), hint: t("Applies to this Bot in every chat. Tool descriptions may remain visible, but denied calls are blocked before execution."), on: enabled, onChange: setEnabled }),
+    enabled ? (0, import_react25.createElement)(
+      import_react25.Fragment,
+      null,
+      (0, import_react25.createElement)(SwitchRow, { label: t("Only allow listed tools"), hint: t("When off, all available tools are allowed except those denied below."), on: selectedOnly, onChange: setSelectedOnly }),
+      selectedOnly ? (0, import_react25.createElement)(
+        Row,
+        { label: t("Allowed tools"), hint: t("One selector per line: native:read or mcp:github:*. Leave empty to allow no tools."), stack: true },
+        (0, import_react25.createElement)("textarea", { className: "bt-bs-input bt-bs-area", "aria-label": t("Allowed tools"), rows: 4, value: allow, onChange: (event) => setAllow(event.target.value) })
+      ) : null,
+      (0, import_react25.createElement)(
+        Row,
+        { label: t("Denied tools"), hint: t("Denied tools override the allowed list. Use native:* for all native tools or mcp:github:* for one MCP server."), stack: true },
+        (0, import_react25.createElement)("textarea", { className: "bt-bs-input bt-bs-area", "aria-label": t("Denied tools"), rows: 3, value: deny, onChange: (event) => setDeny(event.target.value) })
+      ),
+      (0, import_react25.createElement)("p", { className: "bt-set-hint" }, t("Available with API models, including Magpie. Local agents must use their own tool controls. This does not restrict file or network access inside an allowed tool."))
+    ) : null,
+    (0, import_react25.createElement)(
+      "div",
+      { className: "bt-set-row bt-bs-row" },
+      !parsed.ok ? (0, import_react25.createElement)("span", { role: "alert", className: "bt-set-hint" }, t("Enter valid tool selectors before saving.")) : null,
+      (0, import_react25.createElement)("button", { type: "button", className: "bt-soft bt-soft-sm", disabled: !parsed.ok, onClick: () => parsed.ok && save({ toolScope: enabled ? parsed.scope : null }) }, t("Save tool access"))
+    )
   );
 }
 function modelHint(bot, roster) {
@@ -11264,8 +11483,10 @@ function BotSettingsForm({ bot, roster, actions, run: run2 }) {
         { className: "bt-set-row bt-bs-row" },
         (0, import_react25.createElement)("span", { className: "bt-set-copy" }, (0, import_react25.createElement)("span", { className: "bt-bs-label" }, t("Model")), (0, import_react25.createElement)("span", { className: "bt-set-hint" }, modelHint(bot, roster))),
         (0, import_react25.createElement)(ModelMenu, { bot, roster, actions, run: run2 })
-      )
+      ),
+      (0, import_react25.createElement)(SwitchRow, { label: t("Keep this model connection"), hint: t("Stop if this connection is unavailable instead of switching to another provider."), on: bot.modelFallback === false, onChange: (on) => save({ modelFallback: !on }) })
     ),
+    (0, import_react25.createElement)(ToolAccessCard, { bot, save }),
     (0, import_react25.createElement)(
       Card2,
       { title: t("Working folder") },
@@ -17526,7 +17747,7 @@ function NewChat({ mode, roster, actions }) {
   useEscape(close);
   const paneLeft = usePaneLeft();
   const wanted = query.trim().toLowerCase();
-  const matches2 = roster.bots.filter((bot) => !picked.includes(bot.id) && bot.id !== admin && (wanted === "" || bot.name.toLowerCase().includes(wanted) || (bot.role ?? "").toLowerCase().includes(wanted)));
+  const matches3 = roster.bots.filter((bot) => !picked.includes(bot.id) && bot.id !== admin && (wanted === "" || bot.name.toLowerCase().includes(wanted) || (bot.role ?? "").toLowerCase().includes(wanted)));
   const choosingAdmin = group && admin === null;
   const exact = roster.bots.some((bot) => bot.name.toLowerCase() === wanted);
   const pickedBots = picked.map((id) => roster.byId[id]).filter(Boolean);
@@ -17620,7 +17841,7 @@ function NewChat({ mode, roster, actions }) {
       }) });
     }
   }
-  for (const bot of matches2) {
+  for (const bot of matches3) {
     options.push({ key: bot.id, bot, label: bot.name, hint: choosingAdmin ? t("Make admin") : group || picked.length > 0 ? t("Add to group chat") : void 0, run: () => openBot(bot) });
   }
   if (wanted !== "" && !exact && mode !== "search") options.push({ key: "create", icon: (0, import_react40.createElement)(PlusIcon), label: t("Create new Bot “{name}”", { name: query.trim() }), run: createBot });
@@ -19558,7 +19779,7 @@ var import_react47 = require("react");
 var CATEGORIES = [["dev", "Developer"], ["docs", "Docs & files"], ["work", "Work"], ["design", "Design"], ["data", "Data"], ["commerce", "Commerce"], ["search", "Search"]];
 var FEATURED = ["github", "mail", "notion", "linear", "figma", "slack"];
 var PREVIEW = 6;
-var matches = (query, ...texts2) => query === "" || texts2.join(" ").toLowerCase().includes(query.toLowerCase());
+var matches2 = (query, ...texts2) => query === "" || texts2.join(" ").toLowerCase().includes(query.toLowerCase());
 function useJustConnected(state) {
   const last = (0, import_react47.useRef)(state);
   const [fresh, setFresh] = (0, import_react47.useState)(false);
@@ -19753,7 +19974,7 @@ function ConnectorsPage({ roster, actions }) {
   }
   const inCategory = (id) => apps.filter((app) => app.category === id);
   const searching = query.trim() !== "";
-  const found = apps.filter((app) => (category === "" || app.category === category) && matches(query.trim(), app.name, app.about ?? ""));
+  const found = apps.filter((app) => (category === "" || app.category === category) && matches2(query.trim(), app.name, app.about ?? ""));
   let body;
   if (searching || category !== "") {
     body = found.length === 0 ? (0, import_react47.createElement)("p", { className: "bt-app-empty" }, t("Nothing matches")) : (0, import_react47.createElement)(Grid, { apps: found, actions, open });
@@ -22546,6 +22767,75 @@ body:not([data-bt-motion=quiet]) .bt-about-mark:hover .bt-mark[data-live][data-s
 @media (prefers-reduced-motion:reduce){.bt-star:hover .bt-star-icon,.bt-star-count{animation:none}}
 `;
 
+// src/shared/magpie.js
+var MAGPIE = {
+  id: "magpie",
+  name: "Magpie",
+  baseURL: "http://127.0.0.1:3425/v1",
+  api: "openai-responses",
+  protocols: ["openai-responses", "openai-completions"]
+};
+var MAGPIE_LOCAL_KEY = "magpie-local";
+var MAX_MAGPIE_MODELS = 500;
+var EFFORTS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+var invalid = (message) => Object.assign(new Error(message), { code: "bot/invalid" });
+function magpieEndpoint(value = MAGPIE.baseURL) {
+  let url;
+  try {
+    url = new URL(typeof value === "string" ? value.trim() : "");
+  } catch {
+    throw invalid("Enter the endpoint as an http or https address");
+  }
+  if (!["http:", "https:"].includes(url.protocol)) throw invalid("Enter the endpoint as an http or https address");
+  if (url.username || url.password || url.search || url.hash) throw invalid("Use an endpoint without credentials, a query or a fragment");
+  const path2 = url.pathname.replace(/\/+$/, "").replace(/\/(?:chat\/completions|responses|models)$/, "");
+  url.pathname = path2 === "" ? "/v1" : path2;
+  return url.href.replace(/\/+$/, "");
+}
+function isLocalMagpie(baseURL) {
+  return ["127.0.0.1", "localhost", "[::1]"].includes(new URL(baseURL).hostname);
+}
+function magpieProtocol(api = MAGPIE.api) {
+  if (!MAGPIE.protocols.includes(api)) throw invalid("Magpie uses OpenAI Responses or Chat Completions");
+  return api;
+}
+function reasoningEfforts(value) {
+  if (value === false) return false;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return void 0;
+  const entries2 = EFFORTS.filter((level) => Object.hasOwn(value, level)).filter((level) => level === "off" && value[level] === null || typeof value[level] === "string" && /^[a-z][a-z0-9_-]{0,31}$/.test(value[level])).map((level) => [level, value[level]]);
+  return entries2.length > 0 ? Object.fromEntries(entries2) : void 0;
+}
+function magpieModels(body) {
+  if (!Array.isArray(body?.data)) throw invalid("Magpie did not return a model list. Enter model ids manually.");
+  const seen = /* @__PURE__ */ new Set();
+  const whole = (...values) => values.find((value) => Number.isSafeInteger(value) && value > 0);
+  const models = [];
+  for (const raw of body.data) {
+    const id = typeof raw?.id === "string" ? raw.id.trim() : "";
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const name = [raw.name, raw.display_name, raw.displayName].find((value) => typeof value === "string" && value.trim() !== "");
+    const contextWindow = whole(raw.contextWindow, raw.context_window, raw.context_length, raw.max_input_tokens);
+    const maxTokens = whole(raw.maxTokens, raw.max_output_tokens, raw.max_tokens);
+    const declaredInput = raw.inputModalities ?? raw.modalities?.input ?? raw.input;
+    const input = Array.isArray(declaredInput) ? [...new Set(declaredInput.filter((kind) => ["text", "image"].includes(kind)))] : [];
+    const levels = raw.reasoning_levels ?? raw.supported_reasoning_levels;
+    const efforts = raw.reasoning === false ? false : Array.isArray(levels) ? reasoningEfforts(Object.fromEntries(levels.filter((level) => typeof level === "string").map((level) => [level === "none" ? "off" : level, level]))) : void 0;
+    const nativeApis = Array.isArray(raw.native_endpoints) ? MAGPIE.protocols.filter((api) => raw.native_endpoints.includes(api === "openai-responses" ? "/v1/responses" : "/v1/chat/completions")) : [];
+    models.push({
+      id,
+      ...name ? { name: name.trim() } : {},
+      ...contextWindow ? { contextWindow } : {},
+      ...maxTokens ? { maxTokens } : {},
+      ...input.length ? { inputModalities: input } : {},
+      ...efforts !== void 0 ? { reasoningEfforts: efforts } : {},
+      ...nativeApis.length ? { nativeApis } : {}
+    });
+    if (models.length === MAX_MAGPIE_MODELS) break;
+  }
+  return models;
+}
+
 // src/client/providers-page.js
 var import_react52 = require("react");
 var PROTOCOL_NAMES = { "openai-completions": "OpenAI Chat Completions", "openai-responses": "OpenAI Responses", "anthropic-messages": "Anthropic Messages" };
@@ -22578,9 +22868,14 @@ function ProvidersPage({ actions, run: run2, Section: Section2 }) {
         open: open === provider.id,
         onToggle: () => setOpen(open === provider.id ? null : provider.id)
       })),
-      adding ? (0, import_react52.createElement)(AddProvider, { key: "add", view, apply: apply2, actions, onDone: () => setAdding(false) }) : null
+      adding ? (0, import_react52.createElement)(AddProvider, { key: "add", view, apply: apply2, actions, initialMode: adding, onDone: () => setAdding(false) }) : null
     ),
-    adding ? null : (0, import_react52.createElement)("div", { key: "add", className: "bt-actions" }, (0, import_react52.createElement)("button", { type: "button", className: "bt-soft bt-soft-sm", onClick: () => setAdding(true) }, t("Add a provider")))
+    adding ? null : (0, import_react52.createElement)(
+      "div",
+      { key: "add", className: "bt-actions" },
+      (0, import_react52.createElement)("button", { type: "button", className: "bt-soft bt-soft-sm", onClick: () => setAdding("magpie") }, t("Connect Magpie")),
+      (0, import_react52.createElement)("button", { type: "button", className: "bt-soft bt-soft-sm", onClick: () => setAdding(view.addable.length > 0 ? "known" : "custom") }, t("Add a provider"))
+    )
   ];
 }
 function keyState(key) {
@@ -22670,15 +22965,15 @@ function KeyEditor({ provider, apply: apply2, actions }) {
     saved ? (0, import_react52.createElement)("div", { className: "bt-set-hint bt-secret-ok", role: "status" }, (0, import_react52.createElement)(CheckIcon), t("Saved.")) : null
   );
 }
-function AddProvider({ view, apply: apply2, actions, onDone }) {
-  const [mode, setMode] = (0, import_react52.useState)(view.addable.length > 0 ? "known" : "custom");
+function AddProvider({ view, apply: apply2, actions, onDone, initialMode }) {
+  const [mode, setMode] = (0, import_react52.useState)(initialMode);
   return (0, import_react52.createElement)(
     "div",
     { className: "bt-set-row bt-set-paste bt-provider-add" },
     (0, import_react52.createElement)(
       Segmented,
       { label: t("Kind of provider"), value: mode },
-      [["known", t("Known provider")], ["custom", t("Custom API")]].map(([id, label]) => (0, import_react52.createElement)("button", {
+      [["magpie", MAGPIE.name], ["known", t("Known provider")], ["custom", t("Custom API")]].map(([id, label]) => (0, import_react52.createElement)("button", {
         key: id,
         type: "button",
         "aria-pressed": mode === id,
@@ -22686,7 +22981,8 @@ function AddProvider({ view, apply: apply2, actions, onDone }) {
         onClick: () => setMode(id)
       }, label))
     ),
-    // Both forms stay mounted, so switching keeps what is typed in the other.
+    // The forms stay mounted, so switching keeps each connection draft.
+    (0, import_react52.createElement)("div", { hidden: mode !== "magpie" }, (0, import_react52.createElement)(CustomForm, { view, apply: apply2, actions, onDone, preset: MAGPIE })),
     (0, import_react52.createElement)("div", { hidden: mode !== "known" }, (0, import_react52.createElement)(KnownForm, { view, apply: apply2, actions, onDone })),
     (0, import_react52.createElement)("div", { hidden: mode !== "custom" }, (0, import_react52.createElement)(CustomForm, { view, apply: apply2, actions, onDone }))
   );
@@ -22714,27 +23010,53 @@ function KnownForm({ view, apply: apply2, actions, onDone }) {
     (0, import_react52.createElement)(FormActions, { onCancel: onDone, onAdd: add, ready: provider !== "" })
   );
 }
-function CustomForm({ view, apply: apply2, actions, onDone }) {
-  const [draft, setDraft] = (0, import_react52.useState)({ provider: "", name: "", baseURL: "", api: view.protocols[0], key: "", typed: "" });
+function CustomForm({ view, apply: apply2, actions, onDone, preset }) {
+  const [draft, setDraft] = (0, import_react52.useState)({ provider: "", name: preset?.name ?? "", baseURL: preset?.baseURL ?? "", api: preset?.api ?? view.protocols[0], key: "", typed: "" });
   const [found, setFound] = (0, import_react52.useState)(null);
   const [picked, setPicked] = (0, import_react52.useState)([]);
   const [asking, setAsking] = (0, import_react52.useState)(false);
-  const set = (field, value) => setDraft((current) => ({ ...current, [field]: value }));
-  const typed = draft.typed.split(/[\s,]+/).map((id) => id.trim()).filter(Boolean);
-  const models = [...(found ?? []).filter((model) => picked.includes(model.id)), ...typed.filter((id) => !picked.includes(id)).map((id) => ({ id }))];
-  const ready = draft.provider.trim() !== "" && draft.baseURL.trim() !== "" && models.length > 0;
-  const fetchModels = () => {
-    setAsking(true);
-    void apply2(Promise.resolve(actions.providerModels({ baseURL: draft.baseURL, api: draft.api, key: draft.key })).then((list) => {
-      setFound(list);
+  const [busy, setBusy] = (0, import_react52.useState)(false);
+  const request = (0, import_react52.useRef)(0);
+  const saving = (0, import_react52.useRef)(false);
+  (0, import_react52.useEffect)(() => () => {
+    request.current += 1;
+  }, []);
+  const set = (field, value) => {
+    if (["baseURL", "api", "key"].includes(field)) {
+      request.current += 1;
+      setFound(null);
       setPicked([]);
-    })).finally(() => setAsking(false));
+      setAsking(false);
+    }
+    setDraft((current) => ({ ...current, [field]: value }));
+  };
+  const typed = [...new Set(draft.typed.split(/[\s,]+/).map((id) => id.trim()).filter(Boolean))];
+  const models = [...(found ?? []).filter((model) => picked.includes(model.id)), ...typed.filter((id) => !picked.includes(id)).map((id) => ({ id }))];
+  const ready = (preset || draft.provider.trim() !== "") && draft.baseURL.trim() !== "" && models.length > 0 && !busy;
+  const fetchModels = () => {
+    const current = ++request.current;
+    setAsking(true);
+    void apply2(Promise.resolve().then(() => actions.providerModels({ ...preset ? { preset: preset.id } : {}, baseURL: draft.baseURL, api: draft.api, key: draft.key })).then((list) => {
+      if (current === request.current) {
+        setFound(list);
+        setPicked([]);
+      }
+    }).catch((error) => {
+      if (current === request.current) throw error;
+    })).finally(() => {
+      if (current === request.current) setAsking(false);
+    });
   };
   const toggle = (id) => setPicked((list) => list.includes(id) ? list.filter((item) => item !== id) : [...list, id]);
   const add = () => {
-    if (!ready) return;
-    void apply2(actions.addProvider({ custom: true, provider: draft.provider.trim(), name: draft.name, baseURL: draft.baseURL, api: draft.api, key: draft.key, models })).then((ok) => {
+    if (!ready || saving.current) return;
+    saving.current = true;
+    setBusy(true);
+    void apply2(Promise.resolve().then(() => actions.addProvider({ custom: true, ...preset ? { preset: preset.id } : { provider: draft.provider.trim() }, name: draft.name, baseURL: draft.baseURL, api: draft.api, key: draft.key, models }))).then((ok) => {
       if (ok) onDone();
+    }).finally(() => {
+      saving.current = false;
+      setBusy(false);
     });
   };
   const input = (field, label, placeholder) => (0, import_react52.createElement)("input", {
@@ -22744,12 +23066,14 @@ function CustomForm({ view, apply: apply2, actions, onDone }) {
     value: draft[field],
     spellCheck: false,
     autoComplete: "off",
+    disabled: busy,
     onChange: (event) => set(field, event.target.value)
   });
   return (0, import_react52.createElement)(
     "div",
     { className: "bt-provider-form" },
-    (0, import_react52.createElement)(
+    preset ? (0, import_react52.createElement)("div", { className: "bt-set-hint" }, t("Each Magpie connection has its own model route and API key.")) : null,
+    preset ? input("name", t("Connection name"), t("Name (optional)")) : (0, import_react52.createElement)(
       "div",
       { className: "bt-provider-pair" },
       input("provider", t("Provider ID"), t("Provider ID, e.g. my-gateway")),
@@ -22758,14 +23082,15 @@ function CustomForm({ view, apply: apply2, actions, onDone }) {
     (0, import_react52.createElement)(
       "div",
       { className: "bt-provider-pair" },
-      input("baseURL", t("Endpoint"), ENDPOINT_HINTS[draft.api] ?? "https://gateway.example/v1"),
+      input("baseURL", t("Endpoint"), preset?.baseURL ?? ENDPOINT_HINTS[draft.api] ?? "https://gateway.example/v1"),
       (0, import_react52.createElement)(
         "select",
-        { className: "bt-select", "aria-label": t("Protocol"), value: draft.api, onChange: (event) => set("api", event.target.value) },
-        view.protocols.map((api) => (0, import_react52.createElement)("option", { key: api, value: api }, PROTOCOL_NAMES[api] ?? api))
+        { className: "bt-select", "aria-label": t("Protocol"), value: draft.api, disabled: busy, onChange: (event) => set("api", event.target.value) },
+        (preset?.protocols ?? view.protocols).map((api) => (0, import_react52.createElement)("option", { key: api, value: api }, PROTOCOL_NAMES[api] ?? api))
       )
     ),
-    (0, import_react52.createElement)("label", { className: "bt-q-field bt-secret-field" }, (0, import_react52.createElement)(KeyIcon), (0, import_react52.createElement)(MaskedInput, { value: draft.key, onChange: (value) => set("key", value), label: t("API key") })),
+    (0, import_react52.createElement)("label", { className: "bt-q-field bt-secret-field" }, (0, import_react52.createElement)(KeyIcon), (0, import_react52.createElement)(MaskedInput, { value: draft.key, onChange: (value) => set("key", value), label: t("API key"), disabled: busy })),
+    preset ? (0, import_react52.createElement)("div", { className: "bt-set-hint" }, t("Local Magpie may leave the key blank. Choose the protocol your model serves.")) : null,
     (0, import_react52.createElement)(
       "div",
       { className: "bt-secret-edit-block" },
@@ -22773,28 +23098,29 @@ function CustomForm({ view, apply: apply2, actions, onDone }) {
         "div",
         { className: "bt-provider-models-head" },
         (0, import_react52.createElement)("span", { className: "bt-secret-edit-label" }, t("Models")),
-        (0, import_react52.createElement)("button", { type: "button", className: "bt-soft bt-soft-sm", disabled: asking || draft.baseURL.trim() === "", onClick: fetchModels }, asking ? t("Asking…") : t("Fetch models"))
+        (0, import_react52.createElement)("button", { type: "button", className: "bt-soft bt-soft-sm", disabled: asking || busy || draft.baseURL.trim() === "", onClick: fetchModels }, asking ? t("Asking…") : t("Fetch models"))
       ),
       found !== null && found.length === 0 ? (0, import_react52.createElement)("div", { className: "bt-set-hint" }, t("The endpoint lists no models. Enter their ids below.")) : null,
       found !== null && found.length > 0 ? (0, import_react52.createElement)("div", { className: "bt-secret-bots bt-provider-found" }, found.map((model) => (0, import_react52.createElement)("button", {
         key: model.id,
         type: "button",
         className: "bt-secret-bot",
+        disabled: busy,
         "aria-pressed": picked.includes(model.id),
-        title: model.name && model.name !== model.id ? model.name : void 0,
+        title: [model.name, ...(model.nativeApis ?? []).map((api) => PROTOCOL_NAMES[api])].filter(Boolean).join(" · ") || void 0,
         onClick: () => toggle(model.id)
       }, (0, import_react52.createElement)("code", null, model.id), picked.includes(model.id) ? (0, import_react52.createElement)(CheckIcon) : null))) : null,
       input("typed", t("Model ids"), t("Model ids, separated by commas"))
     ),
-    (0, import_react52.createElement)(FormActions, { onCancel: onDone, onAdd: add, ready })
+    (0, import_react52.createElement)(FormActions, { onCancel: onDone, onAdd: add, ready, busy })
   );
 }
-function FormActions({ onCancel, onAdd, ready }) {
+function FormActions({ onCancel, onAdd, ready, busy = false }) {
   return (0, import_react52.createElement)(
     "div",
     { className: "bt-secret-row-actions" },
-    (0, import_react52.createElement)("button", { type: "button", className: "bt-soft bt-soft-sm", onClick: onCancel }, t("Cancel")),
-    (0, import_react52.createElement)("button", { type: "button", className: "bt-soft bt-soft-sm", disabled: !ready, onClick: onAdd }, t("Add"))
+    (0, import_react52.createElement)("button", { type: "button", className: "bt-soft bt-soft-sm", disabled: busy, onClick: onCancel }, t("Cancel")),
+    (0, import_react52.createElement)("button", { type: "button", className: "bt-soft bt-soft-sm", disabled: !ready, onClick: onAdd }, busy ? t("Adding…") : t("Add"))
   );
 }
 var PROVIDERS_CSS = `
