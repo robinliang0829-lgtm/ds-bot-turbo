@@ -62,6 +62,81 @@ function start(team = TEAM) {
   return { ctx, tool, call, state, sent, stop }
 }
 
+test('user tool access and fixed connection persist for only the selected Bot', async (t) => {
+  const { call, state, stop } = start()
+  t.after(stop)
+  const result = await call('update-bot', { id: 'b2', toolScope: { allow: ['native:read'], deny: ['native:write'] }, modelFallback: false })
+  assert.equal(result.ok, true, JSON.stringify(result))
+  assert.deepEqual(state().bots.b2.toolScope, { allow: ['native:read'], deny: ['native:write'] })
+  assert.equal(state().bots.b2.modelFallback, false)
+  assert.equal(state().bots.m1.toolScope, undefined)
+  assert.equal((await call('state')).value.bots.find(bot => bot.id === 'b2').modelFallback, false)
+  assert.equal((await call('update-bot', { id: 'b2', toolScope: null })).ok, true)
+  assert.equal(state().bots.b2.toolScope, undefined)
+})
+
+test('models cannot change user runtime controls, and invalid controls do not partially save', async (t) => {
+  const { state, stop } = start()
+  t.after(stop)
+  await rt.load()
+  for (const actor of ['b2', 'm1']) {
+    await assert.rejects(rt.updateBot('b2', { toolScope: { allow: [] } }, actor), /Only the user/)
+    await assert.rejects(rt.updateBot('b2', { modelFallback: true }, actor), /Only the user/)
+  }
+  for (const patch of [{ toolScope: { allow: 'all' } }, { modelFallback: 'off' }]) {
+    await assert.rejects(rt.updateBot('b2', { role: 'should not save', ...patch }))
+    assert.equal(state().bots.b2.role, '写作')
+  }
+})
+
+test('CLI routes and still-running CLI calls cannot acquire a misleading tool policy', async (t) => {
+  const { call, state, stop } = start()
+  t.after(stop)
+  await rt.load()
+  rt.isLocalAgentRoute = provider => provider === 'codex-cli'
+  rt.botOf('b2').appliedModel = 'codex-cli/default'
+  assert.equal((await call('update-bot', { id: 'b2', toolScope: { allow: [] }, role: 'not saved' })).ok, false)
+  assert.equal(state().bots.b2.toolScope, undefined)
+  assert.equal(state().bots.b2.role, '写作')
+  rt.botOf('b2').appliedModel = 'deepseek/v4'
+  rt.hasActiveLocalAgentCalls = () => true
+  assert.equal((await call('update-bot', { id: 'b2', toolScope: { allow: [] } })).ok, false)
+  rt.hasActiveLocalAgentCalls = () => false
+  assert.equal((await call('update-bot', { id: 'b2', toolScope: { allow: [] } })).ok, true)
+})
+
+test('a CLI call starting during an awaited profile update prevents committing tool access', async (t) => {
+  const { call, state, stop } = start()
+  t.after(stop)
+  await rt.load()
+  let active = false
+  rt.hasActiveLocalAgentCalls = () => active
+  rt.setPermission = async () => { await Promise.resolve(); active = true }
+  const result = await call('update-bot', { id: 'b2', permission: 'normal', toolScope: { allow: [] } })
+  assert.equal(result.ok, false)
+  assert.equal(rt.botOf('b2').toolScope, undefined)
+  assert.equal(state().bots.b2.toolScope, undefined)
+})
+
+test('copying a fixed Bot cannot substitute a default when its connection is missing', async (t) => {
+  const { stop, state } = start()
+  t.after(stop)
+  await rt.load()
+  rt.botOf('b2').model = 'missing/model'
+  rt.botOf('b2').modelFallback = false
+  await assert.rejects(rt.duplicateBot('b2'), /fixed model connection.*unavailable/)
+  assert.equal(Object.keys(state().bots).length, 3)
+})
+
+test('identity prompt describes execution access without claiming hidden tool schemas', async (t) => {
+  const { ctx, call, stop } = start()
+  t.after(stop)
+  await call('update-bot', { id: 'b2', toolScope: { allow: ['native:read'] } })
+  const text = ctx.sections.get('bot-identity').text({ agent: { id: 'b2' } })
+  assert.match(text, /native:read/)
+  assert.match(text, /descriptions may still be visible/)
+})
+
 test('a Bot changes itself by leaving out bot, or by naming itself', async (t) => {
   const { tool, state, stop } = start()
   t.after(stop)

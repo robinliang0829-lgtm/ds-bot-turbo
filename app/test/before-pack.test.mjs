@@ -6,14 +6,22 @@ import { Arch } from 'electron-builder'
 import { archProblem, beforePack, officeRuntimeRequest } from '../scripts/before-pack.mjs'
 import { runtimeTarget } from '../scripts/prepare-runtime.mjs'
 
-test('a build for the architecture of this Node goes on', async () => {
+test('a native build prepares Office only when its platform has a payload', async () => {
   assert.equal(archProblem({ target: 'arm64', platform: 'darwin', host: 'arm64' }), undefined)
   assert.equal(archProblem({ target: 'x64', platform: 'win32', host: 'x64' }), undefined)
   const asked = []
   const packager = { projectDir: 'app-dir', appInfo: { version: '0.0.0' } }
-  await beforePack({ arch: Arch[process.arch], electronPlatformName: process.platform, packager }, async (request) => { asked.push(request) })
+  const context = { arch: Arch[process.arch], electronPlatformName: process.platform, packager }
+  const prepare = async (request) => { asked.push(request) }
+  const target = runtimeTarget(process.platform, process.arch)
+  if (target === undefined) {
+    await assert.rejects(beforePack(context, prepare), { message: `No Office runtime payload for ${process.platform} ${process.arch}.` })
+    assert.equal(asked.length, 0)
+    return
+  }
+  await beforePack(context, prepare)
   assert.equal(asked.length, 1)
-  assert.equal(asked[0].target, runtimeTarget(process.platform, process.arch))
+  assert.equal(asked[0].target, target)
   assert.equal(asked[0].output, join('app-dir', 'build', 'runtime'))
 })
 

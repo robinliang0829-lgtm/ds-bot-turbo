@@ -1,0 +1,44 @@
+{
+  "catalog": {
+    "modelConnections": [
+      {
+        "id": "writer-api",
+        "provider": "turbo-writer",
+        "models": [{ "id": "example-model", "efforts": ["low", "high"] }],
+        "allowedBotIds": ["writer"],
+        "available": true
+      },
+      {
+        "id": "builder-api",
+        "provider": "turbo-builder",
+        "models": [{ "id": "example-model", "efforts": ["low", "high"] }],
+        "allowedBotIds": ["builder"],
+        "available": true
+      }
+    ],
+    "interfaceConnections": [
+      { "id": "writer-repo", "capability": "repo-writer", "allowedBotIds": ["writer"], "available": true },
+      { "id": "builder-repo", "capability": "repo-builder", "allowedBotIds": ["builder"], "available": true }
+    ],
+    "skills": [
+      { "id": "drafting", "capability": "turbo-drafting", "allowedBotIds": ["writer"], "available": true },
+      { "id": "coding", "capability": "turbo-coding", "allowedBotIds": ["builder"], "available": true }
+    ]
+  },
+  "profiles": [
+    {
+      "version": 1,
+      "botId": "writer",
+      "model": { "connectionId": "writer-api", "model": "example-model", "effort": "high" },
+      "interfaces": ["writer-repo"],
+      "skills": ["drafting"]
+    },
+    {
+      "version": 1,
+      "botId": "builder",
+      "model": { "connectionId": "builder-api", "model": "example-model", "effort": "low" },
+      "interfaces": ["builder-repo"],
+      "skills": ["coding"]
+    }
+  ]
+}

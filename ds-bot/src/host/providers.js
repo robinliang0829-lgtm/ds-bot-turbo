@@ -3,6 +3,9 @@
 // it, the route's key in DSH's credential store under the reference the route names.
 // The providers to add are the ones DSH's directory of configurable providers offers.
 
+import { randomUUID } from 'node:crypto'
+import { MAGPIE, MAGPIE_LOCAL_KEY, isLocalMagpie, magpieEndpoint, magpieModels, magpieProtocol, reasoningEfforts } from '../shared/magpie.js'
+
 const PI_AI = 'llm-pi-ai'
 const ROUTE_ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
 // The wire protocols DSH's pi-ai adapter serves on a route it ships nothing about.
@@ -60,6 +63,50 @@ function checkEndpoint(value) {
   return text
 }
 
+function magpieDraft(body) {
+  const baseURL = magpieEndpoint(body.baseURL)
+  const api = magpieProtocol(body.api)
+  let key = typeof body.key === 'string' && body.key.trim() !== '' ? checkKey(body.key) : undefined
+  // pi-ai needs a nonempty key even when a local gateway does not authenticate.
+  // Naming our own reference also prevents ambient OpenAI credentials from being used.
+  if (key === undefined) {
+    if (!isLocalMagpie(baseURL)) throw invalid('Enter an API key for a remote Magpie endpoint')
+    key = MAGPIE_LOCAL_KEY
+  }
+  return { ...body, baseURL, api, key }
+}
+
+async function discoverMagpie(body) {
+  const draft = magpieDraft(body)
+  try {
+    const response = await fetch(`${draft.baseURL}/models`, {
+      method: 'GET', headers: { Accept: 'application/json', Authorization: `Bearer ${draft.key}` },
+      signal: AbortSignal.timeout(10_000), redirect: 'error',
+    })
+    if (!response.ok) {
+      await response.body?.cancel()
+      throw invalid(`Magpie model discovery failed (HTTP ${response.status}). Check the endpoint and API key.`)
+    }
+    const limit = 2 * 1024 * 1024
+    if (Number(response.headers.get('content-length')) > limit) {
+      await response.body?.cancel()
+      throw invalid('The Magpie model list is too large. Enter model ids manually.')
+    }
+    const decoder = new TextDecoder()
+    let text = ''
+    let bytes = 0
+    for await (const chunk of response.body) {
+      bytes += chunk.byteLength
+      if (bytes > limit) throw invalid('The Magpie model list is too large. Enter model ids manually.')
+      text += decoder.decode(chunk, { stream: true })
+    }
+    return magpieModels(JSON.parse(text + decoder.decode()))
+  } catch (error) {
+    if (error?.code === 'bot/invalid') throw error
+    throw invalid('Could not read Magpie models. Check the endpoint and API key, or enter model ids manually.')
+  }
+}
+
 function lookupKnownModel(known, rawId) {
   if (!known || known.size === 0 || typeof rawId !== 'string') return undefined
   const id = rawId.trim().toLowerCase()
@@ -83,12 +130,14 @@ function modelEntry(model, known) {
       ? model.input
       : match?.inputModalities
   const input = Array.isArray(rawInput) ? rawInput.filter(kind => typeof kind === 'string') : []
+  const efforts = reasoningEfforts(model?.reasoningEfforts)
   return {
     id,
     ...(typeof model?.name === 'string' && model.name.trim() !== '' ? { name: model.name.trim() } : {}),
     ...(contextWindow ? { contextWindow } : {}),
     ...(maxTokens ? { maxTokens } : {}),
     ...(input.length > 0 ? { input } : {}),
+    ...(efforts !== undefined ? { reasoningEfforts: efforts } : {}),
   }
 }
 
@@ -260,9 +309,11 @@ export function install(rt) {
   async function addProvider(body) {
     await repairing
     const { settings, credentials } = usable()
-    const provider = String(body.provider ?? '').trim()
-    const custom = body.custom === true
-    const known = custom ? await knownCatalogModels() : undefined
+    const magpie = body.preset === MAGPIE.id
+    if (magpie) body = magpieDraft({ ...body, name: body.name || MAGPIE.name })
+    const provider = magpie ? `${MAGPIE.id}-${randomUUID()}` : String(body.provider ?? '').trim()
+    const custom = magpie || body.custom === true
+    const known = custom && !magpie ? await knownCatalogModels() : undefined
     const map = sections(settings)
     const entry = entryOf(provider)
     if (entry !== undefined && (entry.settingsNs !== PI_AI || profileOf(entry, map) !== undefined)) throw invalid(`${provider} is already set up`)
@@ -303,6 +354,7 @@ export function install(rt) {
   // the question goes with it and is not stored.
   async function discoverModels(body) {
     usable()
+    if (body.preset === MAGPIE.id) return discoverMagpie(body)
     const provider = typeof body.provider === 'string' && body.provider !== '' ? body.provider : undefined
     const request = provider !== undefined && entryOf(provider)?.declared === false
       ? { provider }

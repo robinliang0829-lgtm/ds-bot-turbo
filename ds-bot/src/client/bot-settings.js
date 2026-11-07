@@ -13,6 +13,7 @@ import { AvatarLibraryPanel, avatarImage } from './avatar-library.js'
 import { useMemoryCount } from './memory-panel.js'
 import { SPRING_SHAPE, SPRING_TAP, spring, useGlide, useLinger } from './motion.js'
 import { t } from './i18n.js'
+import { parseToolScope } from '../shared/tool-scope.js'
 
 const capitalize = word => word[0].toUpperCase() + word.slice(1)
 
@@ -60,6 +61,34 @@ export function SwitchRow({ label, hint, on, disabled, onChange }) {
   return h('div', { className: 'bt-set-row bt-bs-row' },
     h('span', { className: 'bt-set-copy' }, h('span', { className: 'bt-bs-label' }, label), hint ? h('span', { className: 'bt-set-hint' }, hint) : null),
     h(Switch, { on, label, disabled, onChange }))
+}
+
+export function ToolAccessCard({ bot, save }) {
+  const [enabled, setEnabled] = useState(bot.toolScope !== undefined)
+  const [selectedOnly, setSelectedOnly] = useState(bot.toolScope?.allow !== undefined)
+  const [allow, setAllow] = useState((bot.toolScope?.allow ?? []).join('\n'))
+  const [deny, setDeny] = useState((bot.toolScope?.deny ?? []).join('\n'))
+  const revision = JSON.stringify(bot.toolScope)
+  useEffect(() => {
+    setEnabled(bot.toolScope !== undefined)
+    setSelectedOnly(bot.toolScope?.allow !== undefined)
+    setAllow((bot.toolScope?.allow ?? []).join('\n'))
+    setDeny((bot.toolScope?.deny ?? []).join('\n'))
+  }, [bot.id, revision])
+  const lines = value => value.split('\n').map(line => line.trim()).filter(Boolean)
+  const parsed = parseToolScope(enabled ? { ...(selectedOnly ? { allow: lines(allow) } : {}), deny: lines(deny) } : undefined)
+  return h(Card, { title: t('Tool access') },
+    h(SwitchRow, { label: t('Limit tool access'), hint: t('Applies to this Bot in every chat. Tool descriptions may remain visible, but denied calls are blocked before execution.'), on: enabled, onChange: setEnabled }),
+    enabled ? h(Fragment, null,
+      h(SwitchRow, { label: t('Only allow listed tools'), hint: t('When off, all available tools are allowed except those denied below.'), on: selectedOnly, onChange: setSelectedOnly }),
+      selectedOnly ? h(Row, { label: t('Allowed tools'), hint: t('One selector per line: native:read or mcp:github:*. Leave empty to allow no tools.'), stack: true },
+        h('textarea', { className: 'bt-bs-input bt-bs-area', 'aria-label': t('Allowed tools'), rows: 4, value: allow, onChange: event => setAllow(event.target.value) })) : null,
+      h(Row, { label: t('Denied tools'), hint: t('Denied tools override the allowed list. Use native:* for all native tools or mcp:github:* for one MCP server.'), stack: true },
+        h('textarea', { className: 'bt-bs-input bt-bs-area', 'aria-label': t('Denied tools'), rows: 3, value: deny, onChange: event => setDeny(event.target.value) })),
+      h('p', { className: 'bt-set-hint' }, t('Available with API models, including Magpie. Local agents must use their own tool controls. This does not restrict file or network access inside an allowed tool.'))) : null,
+    h('div', { className: 'bt-set-row bt-bs-row' },
+      !parsed.ok ? h('span', { role: 'alert', className: 'bt-set-hint' }, t('Enter valid tool selectors before saving.')) : null,
+      h('button', { type: 'button', className: 'bt-soft bt-soft-sm', disabled: !parsed.ok, onClick: () => parsed.ok && save({ toolScope: enabled ? parsed.scope : null }) }, t('Save tool access'))))
 }
 
 function modelHint(bot, roster) {
@@ -213,7 +242,9 @@ export function BotSettingsForm({ bot, roster, actions, run }) {
     h(Card, { title: t('Model') },
       h('div', { className: 'bt-set-row bt-bs-row' },
         h('span', { className: 'bt-set-copy' }, h('span', { className: 'bt-bs-label' }, t('Model')), h('span', { className: 'bt-set-hint' }, modelHint(bot, roster))),
-        h(ModelMenu, { bot, roster, actions, run }))),
+        h(ModelMenu, { bot, roster, actions, run })),
+      h(SwitchRow, { label: t('Keep this model connection'), hint: t('Stop if this connection is unavailable instead of switching to another provider.'), on: bot.modelFallback === false, onChange: on => save({ modelFallback: !on }) })),
+    h(ToolAccessCard, { bot, save }),
     h(Card, { title: t('Working folder') },
       h('div', { className: 'bt-set-row bt-bs-row' },
         h('span', { className: 'bt-set-copy' }, h('span', { className: 'bt-bs-label' }, t('Folder'))),

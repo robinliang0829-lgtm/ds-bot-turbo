@@ -1,7 +1,8 @@
 // The Models page of a window that has no DSH settings of its own: the model providers
 // DSH serves, with their API keys and models, and the providers it can add. DSH keeps
 // all of it; a key only ever travels from these inputs to the host.
-import { createElement as h, useEffect, useState } from 'react'
+import { createElement as h, useEffect, useRef, useState } from 'react'
+import { MAGPIE } from '../shared/magpie.js'
 import { CheckIcon, TrashIcon } from './icons.js'
 import { KeyIcon, MaskedInput } from './secret-card.js'
 import { Segmented, SPRING_SHAPE } from './motion.js'
@@ -30,8 +31,10 @@ export function ProvidersPage({ actions, run, Section }) {
         key: provider.id, provider, apply, actions,
         open: open === provider.id, onToggle: () => setOpen(open === provider.id ? null : provider.id),
       })),
-      adding ? h(AddProvider, { key: 'add', view, apply, actions, onDone: () => setAdding(false) }) : null),
-    adding ? null : h('div', { key: 'add', className: 'bt-actions' }, h('button', { type: 'button', className: 'bt-soft bt-soft-sm', onClick: () => setAdding(true) }, t('Add a provider'))),
+      adding ? h(AddProvider, { key: 'add', view, apply, actions, initialMode: adding, onDone: () => setAdding(false) }) : null),
+    adding ? null : h('div', { key: 'add', className: 'bt-actions' },
+      h('button', { type: 'button', className: 'bt-soft bt-soft-sm', onClick: () => setAdding('magpie') }, t('Connect Magpie')),
+      h('button', { type: 'button', className: 'bt-soft bt-soft-sm', onClick: () => setAdding(view.addable.length > 0 ? 'known' : 'custom') }, t('Add a provider'))),
   ]
 }
 
@@ -90,14 +93,15 @@ function KeyEditor({ provider, apply, actions }) {
     saved ? h('div', { className: 'bt-set-hint bt-secret-ok', role: 'status' }, h(CheckIcon), t('Saved.')) : null)
 }
 
-function AddProvider({ view, apply, actions, onDone }) {
-  const [mode, setMode] = useState(view.addable.length > 0 ? 'known' : 'custom')
+function AddProvider({ view, apply, actions, onDone, initialMode }) {
+  const [mode, setMode] = useState(initialMode)
   return h('div', { className: 'bt-set-row bt-set-paste bt-provider-add' },
     h(Segmented, { label: t('Kind of provider'), value: mode },
-      [['known', t('Known provider')], ['custom', t('Custom API')]].map(([id, label]) => h('button', {
+      [['magpie', MAGPIE.name], ['known', t('Known provider')], ['custom', t('Custom API')]].map(([id, label]) => h('button', {
         key: id, type: 'button', 'aria-pressed': mode === id, disabled: id === 'known' && view.addable.length === 0, onClick: () => setMode(id),
       }, label))),
-    // Both forms stay mounted, so switching keeps what is typed in the other.
+    // The forms stay mounted, so switching keeps each connection draft.
+    h('div', { hidden: mode !== 'magpie' }, h(CustomForm, { view, apply, actions, onDone, preset: MAGPIE })),
     h('div', { hidden: mode !== 'known' }, h(KnownForm, { view, apply, actions, onDone })),
     h('div', { hidden: mode !== 'custom' }, h(CustomForm, { view, apply, actions, onDone })))
 }
@@ -118,54 +122,73 @@ function KnownForm({ view, apply, actions, onDone }) {
     h(FormActions, { onCancel: onDone, onAdd: add, ready: provider !== '' }))
 }
 
-function CustomForm({ view, apply, actions, onDone }) {
-  const [draft, setDraft] = useState({ provider: '', name: '', baseURL: '', api: view.protocols[0], key: '', typed: '' })
+function CustomForm({ view, apply, actions, onDone, preset }) {
+  const [draft, setDraft] = useState({ provider: '', name: preset?.name ?? '', baseURL: preset?.baseURL ?? '', api: preset?.api ?? view.protocols[0], key: '', typed: '' })
   const [found, setFound] = useState(null)
   const [picked, setPicked] = useState([])
   const [asking, setAsking] = useState(false)
-  const set = (field, value) => setDraft(current => ({ ...current, [field]: value }))
-  const typed = draft.typed.split(/[\s,]+/).map(id => id.trim()).filter(Boolean)
+  const [busy, setBusy] = useState(false)
+  const request = useRef(0)
+  const saving = useRef(false)
+  useEffect(() => () => { request.current += 1 }, [])
+  const set = (field, value) => {
+    if (['baseURL', 'api', 'key'].includes(field)) {
+      request.current += 1
+      setFound(null)
+      setPicked([])
+      setAsking(false)
+    }
+    setDraft(current => ({ ...current, [field]: value }))
+  }
+  const typed = [...new Set(draft.typed.split(/[\s,]+/).map(id => id.trim()).filter(Boolean))]
   const models = [...(found ?? []).filter(model => picked.includes(model.id)), ...typed.filter(id => !picked.includes(id)).map(id => ({ id }))]
-  const ready = draft.provider.trim() !== '' && draft.baseURL.trim() !== '' && models.length > 0
+  const ready = (preset || draft.provider.trim() !== '') && draft.baseURL.trim() !== '' && models.length > 0 && !busy
   const fetchModels = () => {
+    const current = ++request.current
     setAsking(true)
-    void apply(Promise.resolve(actions.providerModels({ baseURL: draft.baseURL, api: draft.api, key: draft.key })).then((list) => { setFound(list); setPicked([]) }))
-      .finally(() => setAsking(false))
+    void apply(Promise.resolve().then(() => actions.providerModels({ ...(preset ? { preset: preset.id } : {}), baseURL: draft.baseURL, api: draft.api, key: draft.key })).then((list) => {
+      if (current === request.current) { setFound(list); setPicked([]) }
+    }).catch((error) => { if (current === request.current) throw error })).finally(() => { if (current === request.current) setAsking(false) })
   }
   const toggle = id => setPicked(list => (list.includes(id) ? list.filter(item => item !== id) : [...list, id]))
   const add = () => {
-    if (!ready) return
-    void apply(actions.addProvider({ custom: true, provider: draft.provider.trim(), name: draft.name, baseURL: draft.baseURL, api: draft.api, key: draft.key, models }))
+    if (!ready || saving.current) return
+    saving.current = true
+    setBusy(true)
+    void apply(Promise.resolve().then(() => actions.addProvider({ custom: true, ...(preset ? { preset: preset.id } : { provider: draft.provider.trim() }), name: draft.name, baseURL: draft.baseURL, api: draft.api, key: draft.key, models })))
       .then((ok) => { if (ok) onDone() })
+      .finally(() => { saving.current = false; setBusy(false) })
   }
   const input = (field, label, placeholder) => h('input', {
-    className: 'bt-input', 'aria-label': label, placeholder, value: draft[field], spellCheck: false, autoComplete: 'off', onChange: event => set(field, event.target.value),
+    className: 'bt-input', 'aria-label': label, placeholder, value: draft[field], spellCheck: false, autoComplete: 'off', disabled: busy, onChange: event => set(field, event.target.value),
   })
   return h('div', { className: 'bt-provider-form' },
-    h('div', { className: 'bt-provider-pair' },
+    preset ? h('div', { className: 'bt-set-hint' }, t('Each Magpie connection has its own model route and API key.')) : null,
+    preset ? input('name', t('Connection name'), t('Name (optional)')) : h('div', { className: 'bt-provider-pair' },
       input('provider', t('Provider ID'), t('Provider ID, e.g. my-gateway')),
       input('name', t('Name'), t('Name (optional)'))),
     h('div', { className: 'bt-provider-pair' },
-      input('baseURL', t('Endpoint'), ENDPOINT_HINTS[draft.api] ?? 'https://gateway.example/v1'),
-      h('select', { className: 'bt-select', 'aria-label': t('Protocol'), value: draft.api, onChange: event => set('api', event.target.value) },
-        view.protocols.map(api => h('option', { key: api, value: api }, PROTOCOL_NAMES[api] ?? api)))),
-    h('label', { className: 'bt-q-field bt-secret-field' }, h(KeyIcon), h(MaskedInput, { value: draft.key, onChange: value => set('key', value), label: t('API key') })),
+      input('baseURL', t('Endpoint'), preset?.baseURL ?? ENDPOINT_HINTS[draft.api] ?? 'https://gateway.example/v1'),
+      h('select', { className: 'bt-select', 'aria-label': t('Protocol'), value: draft.api, disabled: busy, onChange: event => set('api', event.target.value) },
+        (preset?.protocols ?? view.protocols).map(api => h('option', { key: api, value: api }, PROTOCOL_NAMES[api] ?? api)))),
+    h('label', { className: 'bt-q-field bt-secret-field' }, h(KeyIcon), h(MaskedInput, { value: draft.key, onChange: value => set('key', value), label: t('API key'), disabled: busy })),
+    preset ? h('div', { className: 'bt-set-hint' }, t('Local Magpie may leave the key blank. Choose the protocol your model serves.')) : null,
     h('div', { className: 'bt-secret-edit-block' },
       h('div', { className: 'bt-provider-models-head' },
         h('span', { className: 'bt-secret-edit-label' }, t('Models')),
-        h('button', { type: 'button', className: 'bt-soft bt-soft-sm', disabled: asking || draft.baseURL.trim() === '', onClick: fetchModels }, asking ? t('Asking…') : t('Fetch models'))),
+        h('button', { type: 'button', className: 'bt-soft bt-soft-sm', disabled: asking || busy || draft.baseURL.trim() === '', onClick: fetchModels }, asking ? t('Asking…') : t('Fetch models'))),
       found !== null && found.length === 0 ? h('div', { className: 'bt-set-hint' }, t('The endpoint lists no models. Enter their ids below.')) : null,
       found !== null && found.length > 0 ? h('div', { className: 'bt-secret-bots bt-provider-found' }, found.map(model => h('button', {
-        key: model.id, type: 'button', className: 'bt-secret-bot', 'aria-pressed': picked.includes(model.id), title: model.name && model.name !== model.id ? model.name : undefined, onClick: () => toggle(model.id),
+        key: model.id, type: 'button', className: 'bt-secret-bot', disabled: busy, 'aria-pressed': picked.includes(model.id), title: [model.name, ...(model.nativeApis ?? []).map(api => PROTOCOL_NAMES[api])].filter(Boolean).join(' · ') || undefined, onClick: () => toggle(model.id),
       }, h('code', null, model.id), picked.includes(model.id) ? h(CheckIcon) : null))) : null,
       input('typed', t('Model ids'), t('Model ids, separated by commas'))),
-    h(FormActions, { onCancel: onDone, onAdd: add, ready }))
+    h(FormActions, { onCancel: onDone, onAdd: add, ready, busy }))
 }
 
-function FormActions({ onCancel, onAdd, ready }) {
+function FormActions({ onCancel, onAdd, ready, busy = false }) {
   return h('div', { className: 'bt-secret-row-actions' },
-    h('button', { type: 'button', className: 'bt-soft bt-soft-sm', onClick: onCancel }, t('Cancel')),
-    h('button', { type: 'button', className: 'bt-soft bt-soft-sm', disabled: !ready, onClick: onAdd }, t('Add')))
+    h('button', { type: 'button', className: 'bt-soft bt-soft-sm', disabled: busy, onClick: onCancel }, t('Cancel')),
+    h('button', { type: 'button', className: 'bt-soft bt-soft-sm', disabled: !ready, onClick: onAdd }, busy ? t('Adding…') : t('Add')))
 }
 
 export const PROVIDERS_CSS = `

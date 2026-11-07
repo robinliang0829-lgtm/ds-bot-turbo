@@ -1,8 +1,22 @@
 <p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/logo-dark.svg"><img src="docs/images/logo.svg" alt="DS Bot" width="260"></picture></p>
 
-# DS Bot
+# ds-bot-turbo
 
 [English](README.md) | 中文
+
+这是基于 DS-Bot、将 OpenMausBot 能力移植到 DS Bot 运行时的[公开项目](https://github.com/robinliang0829-lgtm/ds-bot-turbo)。当前开发分支包含实际的工具选择移植和 Magpie 支持，完整 OpenMausBot 应用仍在后续范围中。
+
+- **连接 Magpie**：Bot 设置 → 模型。默认 OpenAI Responses，也可选 Chat Completions；支持发现模型和手工输入模型 ID。每个连接拥有独立路由和凭据引用，各 Bot 可选择不同连接。
+- **固定此模型连接**：连接消失时不自动回退，覆盖群成员 Session 和复制 Bot；用户仍可主动改选模型。
+- **工具使用范围**：移植 OpenMausBot allow/deny 规则，在 DSH 执行入口检查 Bot 的独聊、群聊和分段调用。工具描述可能仍然可见。这不是文件或网络沙盒；CLI 原生工具仍需使用 CLI 自身的控制。
+
+[源码研究](docs/turbo/RESEARCH.md) · [设计说明](docs/plans/2026-11-06-turbo-runtime-profiles.md) · [移植路线图](docs/turbo/ROADMAP.md) · [隔离环境验证](docs/turbo/SMOKE.md) · [第三方归属](NOTICE)
+
+当前是源码预览。为兼容 DSH 注册，插件包名暂保留 `ds-bot`，尚未发布 Turbo 安装包或 npm 包。连接私有 ACL、私有技能管理和完整 OpenMausBot 工作台属于后续里程碑。严格 runtime-profile 解析器是已测试的基础模块，尚未成为生产调用入口。这次代码修改不会迁移或更改用户现有数据。
+
+## 上游 DS Bot 文档
+
+下方下载链接与截图属于上游 DS Bot，**不包含 Turbo 修改**。保留其原始归属与使用文档。
 
 ![版本](https://img.shields.io/badge/版本-v0.3_预览-blue) ![DSH](https://img.shields.io/badge/DSH-0.2.2--rc.1-4D6BFE) ![许可](https://img.shields.io/badge/许可-Apache_2.0-green)
 

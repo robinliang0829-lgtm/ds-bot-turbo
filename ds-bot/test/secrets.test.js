@@ -334,8 +334,8 @@ test('tool results and model requests lose the values', async (t) => {
   const plain = { isError: false, value: 'nothing here' }
   assert.equal(await execute({}, async () => plain), plain)
 
-  // The usage meter registers after the secrets listener.
-  const stream = bench.listeners['llm/stream'].at(-2)
+  // Runtime controls and the usage meter register after the secrets listener.
+  const stream = bench.listeners['llm/stream'].at(-3)
   const passed = []
   const next = () => { passed.push(true); return (async function* () {})() }
   const options = {

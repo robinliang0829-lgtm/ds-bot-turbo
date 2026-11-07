@@ -160,7 +160,15 @@ test('abort cancels the turn and the pending calls', async (t) => {
   assert.equal(out.finish.kind, 'aborted')
 })
 
-test('env sanitization drops agent and key variables', () => {
+test('env sanitization drops agent and key variables', (t) => {
+  const names = ['ACP_BACKEND', 'OPENAI_API_KEY', 'DS_BOT_HOME']
+  const before = Object.fromEntries(names.map(name => [name, process.env[name]]))
+  t.after(() => {
+    for (const name of names) {
+      if (before[name] === undefined) delete process.env[name]
+      else process.env[name] = before[name]
+    }
+  })
   process.env.ACP_BACKEND = 'windsurf'
   process.env.OPENAI_API_KEY = 'sk-test'
   process.env.DS_BOT_HOME = '/x'
@@ -169,7 +177,9 @@ test('env sanitization drops agent and key variables', () => {
   assert.equal(env.OPENAI_API_KEY, undefined)
   assert.equal(env.DS_BOT_HOME, undefined)
   assert.equal(env.EXTRA, '1')
-  assert.equal(env.PATH, process.env.PATH)
+  const pathKey = Object.keys(process.env).find(key => key.toUpperCase() === 'PATH')
+  assert.ok(pathKey, 'the process has a PATH variable')
+  assert.equal(env[pathKey], process.env[pathKey])
 })
 
 test('custom agent validation', () => {

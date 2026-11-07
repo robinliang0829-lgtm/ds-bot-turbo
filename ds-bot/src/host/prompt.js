@@ -49,6 +49,7 @@ export function install(rt) {
         '# Your identity',
         `You are ${bot.name}, a Bot on the user's team in DS Bot.${bot.role ? ` Your role: ${bot.role}.` : ''}`,
         bot.instructions ? `\n${bot.instructions}` : '',
+        bot.toolScope === undefined ? '' : `\nThe user set this Bot's tool access: ${JSON.stringify(bot.toolScope)}. Selectors use native:name or mcp:server:name; * matches a tool name, and deny wins. A missing allow list inherits the available tools; an empty allow list permits none. Tool descriptions may still be visible, but disabled calls will be rejected. run_code is only a transport: every nested tool call is checked. Do not retry a disabled operation through another tool; ask the user to change Tool access if needed.`,
         '',
         rt.isMain(self) ? `${MAIN_RULES}\n\n${TEAM_RULES}` : TEAM_RULES,
       ].join('\n')
