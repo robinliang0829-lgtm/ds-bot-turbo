@@ -142,13 +142,21 @@ test('the release becomes Latest last, after every job that attaches files', () 
   assert.match(runs(job), /node scripts\/release-notes\.mjs /u)
 })
 
-test('both READMEs open with the same download block, a Windows link and the not-official line', () => {
-  for (const file of ['../../README.md', '../../README.zh.md']) {
-    const top = read(file).split(/\r?\n/u).slice(0, 10).join('\n')
-    assert.match(top, /\(https:\/\/github\.com\/Fei2411\/DS-Bot\/releases\/latest\)/u, file)
-    assert.match(top, /Windows 10\/11/u, file)
-    assert.match(top, /not an official DeepSeek product/u, file)
-    assert.match(top, /不是 DeepSeek 官方产品/u, file)
+test('both READMEs label upstream downloads separately from the Turbo preview', () => {
+  for (const [file, heading, disclaimer] of [
+    ['../../README.md', '## Upstream DS Bot documentation', /do \*\*not\*\* include the Turbo changes/u],
+    ['../../README.zh.md', '## 上游 DS Bot 文档', /\*\*不包含 Turbo 修改\*\*/u],
+  ]) {
+    const content = read(file)
+    const section = content.indexOf(heading)
+    const download = content.indexOf('**[Download DS Bot')
+    assert.ok(section >= 0 && download > section, `${file}: label the upstream section before its downloads`)
+    assert.match(content.slice(section, download), disclaimer, file)
+    const line = content.slice(download).split(/\r?\n/u)[0]
+    assert.match(line, /\(https:\/\/github\.com\/Fei2411\/DS-Bot\/releases\/latest\)/u, file)
+    assert.match(line, /Windows 10\/11/u, file)
+    assert.match(line, /not an official DeepSeek product/u, file)
+    assert.match(line, /不是 DeepSeek 官方产品/u, file)
   }
   const block = (file) => {
     const lines = read(file).split(/\r?\n/u)
